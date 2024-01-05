@@ -18,7 +18,35 @@ fn main() {
     let lower_right = parse_complex(&args[4]).expect("error parsing lower right corner point");
     let mut pixels = vec![0;bounds.0*bounds.1];
 
-    render(&mut pixels,bounds,upper_left,lower_right);
+    //单线程render
+    //render(&mut pixels,bounds,upper_left,lower_right);
+    //并发render
+    let threads = 8;
+    let rows_per_band = bounds.1/threads + 1;
+    {
+        let bands: Vec<&mut [u8]> = 
+            pixels.chunks_mut(rows_per_band*bounds.0).collect();
+        /*crossbeam::scope(|spawner| { ... })：这是一个用于创建并发作用域的 Crossbeam 函数。
+        它接受一个闭包作为参数，这个闭包会在并发作用域内执行。
+        spawner 参数是一个用于启动新线程的工具，可以将任务委托给它来在并发环境中执行。 */
+        crossbeam::scope(|spawner|{
+            for(i,band) in bands.into_iter().enumerate(){
+                let top = rows_per_band*i;
+                let height = band.len()/bounds.0;
+                let band_bounds = (bounds.0,height);
+                let band_upper_left = 
+                    pixel_to_point(bounds,(0,top),upper_left,lower_right);
+                let band_lower_right = 
+                    pixel_to_point(bounds, (bounds.0,top+height), upper_left, lower_right);
+                /*在并发作用域内，使用 spawner.spawn() 方法启动一个新线程来渲染当前渲染带。
+                move |_| 表示将闭包中需要的所有数据都移动进闭包，以确保线程安全性。
+                render() 函数将会渲染当前带的像素数据，使用提供的边界和坐标信息。 */
+                spawner.spawn(move |_| {
+                    render(band,band_bounds,band_upper_left,band_lower_right);
+                });
+            }
+        }).unwrap();
+    }
     write_image(&args[1],&pixels,bounds).expect("error writing PNG files");
 
 }
@@ -68,19 +96,20 @@ fn parse_complex(s:&str)->Option<Complex<f64>>{
 
 ///从像素到复数的映射，绘制出图像中像素点行和列，返回复平面中对应的坐标
 ///'bounds' 是一个‘pair’，给出了图像高度宽度。‘pixel’ 是像素坐标； ‘upper_left’ and 'lower_right'是复平面中表示指定图像覆盖范围的点
-fn pixel_to_point(
-                bounds:(usize,usize),
-                pixel:(usize,usize),
-                upper_left:Complex<f64>,
-                lower_right:Complex<f64>)->Complex<f64> {
-    let (width,height) = (lower_right.re - upper_left.re,
-                            upper_left.im - lower_right.im);
-    Complex{
-        re:upper_left.re+pixel.0 as f64 * width / bounds.0 as f64,
-        im:upper_left.im+pixel.1 as f64 * height / bounds.1 as f64
-    //减法是因为在屏幕坐标系中pixel.1是向下递增，但复数虚部是向上递增
-    }
 
+fn pixel_to_point(
+    bounds: (usize, usize),
+    pixel: (usize, usize),
+    upper_left: Complex<f64>,
+    lower_right: Complex<f64>,
+) -> Complex<f64> {
+    let (width, height) = (
+        lower_right.re - upper_left.re,
+        upper_left.im - lower_right.im,
+    );
+    let re = upper_left.re + pixel.0 as f64 * width / bounds.0 as f64;
+    let im = upper_left.im - pixel.1 as f64 * height / bounds.1 as f64;
+    Complex { re, im }
 }
 
 ///绘制曼德博集
